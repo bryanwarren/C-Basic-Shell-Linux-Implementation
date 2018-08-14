@@ -1,0 +1,4 @@
+cat mob.txt | sed 's/too/pineapple/' > sed.out
+echo Output of pipeline
+cat sed.out
+rm sed.out

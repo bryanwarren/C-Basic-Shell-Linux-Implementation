@@ -1,0 +1,4 @@
+cat < colors2.txt | sed 's/e/E/' | sort > colors2.sorted
+echo Output of sort
+cat colors2.sorted
+rm colors2.sorted

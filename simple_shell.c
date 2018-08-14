@@ -1,0 +1,319 @@
+//CS 170 - Project 0
+//Bryan Warren
+//Phillip Masterson
+
+#include <stdio.h>
+#include <string.h>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <stdlib.h>
+#include <fcntl.h>
+#include <signal.h>
+
+#define MAX_TOKEN_LENGTH 50
+#define MAX_TOKEN_COUNT 100
+#define MAX_LINE_LENGTH 512
+
+// Simple implementation for Shell command
+// Assume all arguments are seperated by space
+// Erros are ignored when executing fgets(), fork(), and waitpid(). 
+
+/**
+ * Sample session
+ *  shell: echo hello
+ *   hello
+ *   shell: ls
+ *   Makefile  simple  simple_shell.c
+ *   shell: exit
+**/
+
+//Used for checking fork errors
+void forkErrorCheck(pid_t pid){
+  if(pid==-1)
+     perror("Error: fork failed");
+}
+
+//Function that runs commands. Used when there is no input/output redirection or piping (such as 'ls' or 'ls -l')
+void runcommand(char* command, char** args) {
+  pid_t pid = fork();
+  forkErrorCheck(pid);
+  if(pid){ // parent
+    waitpid(pid, NULL, 0);
+  }
+  else { // child
+    execvp(command, args);
+    perror(command);
+  }
+}
+
+//Function used to parse through line and build the argument list for a command. Stops if it encounters: null, <, >, |
+char * parse_args(char * last_cmd, char ** args, int *argnum, int argument_count) {
+  char * next_token;
+  char * tok;
+  args[0]=last_cmd;    
+  
+  int loop=1;
+  while(loop) {
+    next_token = strtok(NULL, " ");
+    tok = next_token;
+    if(!next_token || strcmp(next_token,"<")==0 || strcmp(next_token,">")==0 || strcmp(next_token,"|")==0) {  //or null/EOF
+      if(!next_token) { //EOF
+	tok = NULL;
+      }
+      loop=0;  //encountered <>|...keep going
+    } else {
+      //get next argument
+      argnum[argument_count]=argnum[argument_count]+1;
+      int num = argnum[argument_count];
+      args[num] = next_token;
+    }
+  }
+  int num2 = argnum[argument_count];
+  args[num2+1]=NULL;
+  return tok;
+}
+
+//Redirects stdout to a file
+void redirect_output(char * out_file) {
+  pid_t fd = open(out_file,O_WRONLY|O_CREAT|O_TRUNC,0644);
+  dup2(fd,1); 
+  close(fd);
+}
+
+//Redirects stdin to a file
+void redirect_input(char * in_file) {
+  pid_t fd = open(in_file,O_RDONLY);
+  if(fd<0)
+    perror(in_file);
+  dup2(fd,0);
+  close(fd);
+}
+
+
+int main(){
+  char line[MAX_LINE_LENGTH];
+  void exit_call(int sig);
+  signal(SIGTSTP, exit_call);
+  while(fgets(line, MAX_LINE_LENGTH, stdin)){
+    line[strlen(line)-1] = '\0';// get rid of the new line
+    
+    int pipes[4]; 
+    int numpipes = 0; //keep track of the number of pipes 
+    
+    char** arguments[4]; //array of arrays that contains each command's argument list
+    char* argtemp[MAX_TOKEN_COUNT];
+    char* argtemp2[MAX_TOKEN_COUNT];
+    char* argtemp3[MAX_TOKEN_COUNT];
+    char* argtemp4[MAX_TOKEN_COUNT];
+      
+    int argnum[4]; //number of args for each command
+    for(int i = 0; i < 4; i++){
+      argnum[i] = 0;
+    }
+    int argument_count = 0; //number of commands
+      
+    int redir_in=0; //set if there is input redirection
+    int redir_out=0; //set if there is output redirection
+    char * in_file; //keeps track of the input file if there is one
+    char * out_file; //keeps track of the output file if there is one
+    
+    char* token = strtok(line, " ");
+    char* last_cmd = token;
+
+    //Get the first command's argument list
+    arguments[argument_count] = argtemp;
+    token = parse_args(last_cmd, arguments[argument_count], argnum, argument_count);
+    argument_count++;
+
+    //Mark if there is input redirection and keep track of the file
+    if(token&&strcmp(token, "<")==0) {
+      redir_in = 1;
+      in_file = strtok(NULL, " ");
+      arguments[argument_count]=argtemp2;
+      token = parse_args(last_cmd, arguments[argument_count], argnum, argument_count);
+      argument_count++;
+    }
+
+    //Marks if there are pipes and get the arguments for the commands
+    if(token&&strcmp(token, "|")==0) {  //at least one pipe...
+      numpipes++;
+      arguments[argument_count]=argtemp3;
+      last_cmd = strtok(NULL, " ");
+      token = parse_args(last_cmd, arguments[argument_count], argnum, argument_count);
+      argument_count++;
+      if(token && strcmp(token, "|")==0) { //second pipe
+	numpipes++;
+	last_cmd = strtok(NULL, " ");
+	arguments[argument_count] = argtemp4;
+	token = parse_args(last_cmd, arguments[argument_count], argnum, argument_count);
+	argument_count++;
+      }
+    }
+
+    //Mark if there is output redirection and keep track of the file
+    if(token && strcmp(token, ">")==0) { //redirect output
+      redir_out = 1;
+      out_file = strtok(NULL, " ");
+    }
+    
+    //If no redirection or piping, just run the simple forking
+    if((redir_in==0)&&(redir_out==0)&&(numpipes==0)){
+      runcommand(last_cmd, arguments[0]);
+    }
+    
+    //If there is redirection (ie a > or < or both), but no pipes:
+    if(((redir_in==1)||(redir_out==1)) && numpipes==0){
+      pid_t pid = fork();
+      forkErrorCheck(pid);
+      if(pid) { // parent
+	waitpid(pid, NULL, 0);
+      }
+      else { // child
+	if(redir_in==1)
+	  redirect_input(in_file);
+	if(redir_out==1)
+	  redirect_output(out_file);
+	execvp(arguments[0][0], arguments[0]);
+	perror(arguments[0][0]);
+      }
+    }
+ 
+    //If only one pipe
+    if(numpipes==1){
+      if(pipe(pipes) < 0)
+        perror("pipe failed");
+      pid_t pid = fork();
+      forkErrorCheck(pid);
+      if(pid==0) {
+	//redirect input if needed
+	if(redir_in==1){
+	  redirect_input(in_file);
+	}
+	dup2(pipes[1], 1); //replace stdout with input part of pipe
+	close(pipes[0]);
+	execvp(arguments[0][0], arguments[0]);
+        perror(arguments[0][0]);
+      }
+      pid_t pid2 = fork();
+      forkErrorCheck(pid);
+      if(pid2==0){
+	if(redir_out==1){
+	  redirect_output(out_file);
+	}
+	dup2(pipes[0], 0); //replace stdin with output part of pipe
+	close(pipes[1]);
+	if(redir_in==0){
+	  execvp(arguments[1][0], arguments[1]);
+	  perror(arguments[1][0]);
+	}
+	else{
+	  execvp(arguments[2][0], arguments[2]);
+	  perror(arguments[2][0]);
+	}
+      }
+      //Parent closes pipes and waits for processes
+      close(pipes[0]);
+      close(pipes[1]);
+      wait(0);
+      wait(0);
+    }
+
+      
+    //If there are two pipes
+    if(numpipes==2){
+      pid_t pid[3];
+      //First pipes is pipes[0] and pipes[1]. Second pipe is pipes[2] and pipes[3]
+      if(pipe(pipes) < 0)
+	perror("pipe failed");
+      if(pipe(pipes+2) < 0)
+	perror("second pipe failed");
+      pid[0]=fork();
+      forkErrorCheck(pid[0]);
+      //First command
+      if(pid[0]==0) {
+	if(redir_in==1){
+	  redirect_input(in_file);
+	}
+	dup2(pipes[1], 1); //replace 1st commnad's stout with write end of pipe 1
+	for(int i = 0; i < 4; i++){
+	  close(pipes[i]);
+	}
+	execvp(arguments[0][0], arguments[0]);
+	perror(arguments[0][0]);
+      }
+      //Second command
+      else{
+	pid[1]=fork();
+	forkErrorCheck(pid[1]);
+	if(pid[1]==0){
+	  if(redir_out==1)
+	    redirect_output(out_file);
+	  dup2(pipes[0], 0); //replace 2nd command's stdin with read end of pipe 1
+	  dup2(pipes[3], 1); //replace 2nd command's stdout with write end of pipe 2
+	  for(int i = 0; i < 4; i++){
+	    close(pipes[i]);;
+	  }
+	  
+	  if(redir_in==0){
+	    execvp(arguments[1][0], arguments[1]);
+	    perror(arguments[1][0]);
+	  }
+	  else{
+	    execvp(arguments[2][0], arguments[2]);
+	    perror(arguments[2][0]);
+	  }
+	}
+	//Third command
+	else{
+	  pid[2]=fork();
+	  forkErrorCheck(pid[2]);
+	  if(pid[2]==0){
+	    if(redir_out==1)
+	      redirect_output(out_file);
+	    dup2(pipes[2], 0); //replace 3rd command's stdin with read end of pipe2
+	    for(int i = 0; i < 4; i++){
+	      close(pipes[i]);
+	    }
+	    if(redir_in==0){
+	      execvp(arguments[2][0], arguments[2]);
+	      perror(arguments[2][0]);
+	    }
+		     
+	    else{
+	      execvp(arguments[3][0], arguments[3]);
+	      perror(arguments[3][0]);
+	    }
+	  }
+	}
+      }
+
+      //close all the pipes
+      for(int i = 0; i < 4; i++){
+	close(pipes[i]);
+      }
+      //wait for all the processes
+      for(int i = 0; i < 3; i++){
+	int status;
+	waitpid(pid[i], &status, 0);
+      }
+    }   	
+
+    //exit shell if user types exit
+    if(last_cmd && strcmp(last_cmd, "exit") == 0)
+      exit(0);
+    
+  }
+  
+  return 0;
+}
+
+
+//Used for pressing Z twice to exit the shell
+void exit_call(int sig) {
+  static int count = 0;
+  count++;
+  if(count == 1) {
+    signal(SIGTSTP, SIG_DFL);
+  }
+}
+

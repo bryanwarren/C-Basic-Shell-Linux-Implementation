@@ -1,0 +1,4 @@
+sort < colors2.txt > colors2.sorted
+echo Output of sort
+cat colors2.sorted
+rm colors2.sorted

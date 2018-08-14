@@ -1,0 +1,1 @@
+cat < bob.txt | sed 's/H/X/g'
